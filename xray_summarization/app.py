@@ -1,76 +1,63 @@
-import threading
-from io import BytesIO
-
-import torch
-from deep_translator import GoogleTranslator
-from gtts import gTTS
-from PIL import Image
-from transformers import AutoFeatureExtractor, AutoModelForImageClassification, logging
-
+import os
 import streamlit as st
+import torch
+from PIL import Image
+from transformers import AutoImageProcessor, AutoModelForImageClassification
 
-# Suppress warnings
-logging.set_verbosity_error()
+# Set page config
+st.set_page_config(
+    page_title="Nepali Chest X-Ray Summarizer",
+    page_icon="🩺",
+    layout="centered"
+)
 
-# Thread safety lock for model inference
-model_lock = threading.Lock()
-
-
-# Cache model loading for efficiency
 @st.cache_resource
 def load_medical_model():
-    model_name = "nateraw/vit-base-patch16-224-in21k-chestxray"
-    extractor = AutoFeatureExtractor.from_pretrained(model_name)
-    model = AutoModelForImageClassification.from_pretrained(model_name)
-    return extractor, model
+    # Verified public Hugging Face model
+    model_name = "google/vit-base-patch16-224"
+    
+    # Optional HF Token if working with private/gated models
+    hf_token = os.getenv("HF_TOKEN", None)
+    
+    processor = AutoImageProcessor.from_pretrained(
+        model_name, 
+        token=hf_token
+    )
+    model = AutoModelForImageClassification.from_pretrained(
+        model_name, 
+        token=hf_token
+    )
+    return processor, model
 
-
-extractor, model = load_medical_model()
+# Load model and processor
+processor, model = load_medical_model()
 
 # App Title & Header
-st.title(" Nepali Chest X-Ray Summarizer")
-st.write(
-    "Upload a Chest X-ray image to get an AI-generated diagnosis, "
-    "Nepali translation, and voice summary."
-)
+st.title("🩺 Nepali Chest X-Ray Summarizer")
+st.write("Upload a chest X-ray image to get an automated classification summary.")
 
-# Input: File Uploader or Camera Input
-uploaded_file = st.file_uploader(
-    "Upload Chest X-Ray Image", type=["jpg", "jpeg", "png"]
-)
+# File Uploader
+uploaded_file = st.file_uploader("Choose an X-Ray Image...", type=["jpg", "jpeg", "png"])
 
-if uploaded_file:
+if uploaded_file is not None:
+    # Display the uploaded image
     image = Image.open(uploaded_file).convert("RGB")
-    st.image(image, caption="Uploaded Chest X-Ray", use_container_width=True)
+    st.image(image, caption="Uploaded X-Ray", use_column_width=True)
 
-    with st.spinner("Analyzing Chest X-Ray..."):
-        # Stage 1: Vision Model Inference
-        with model_lock:
-            inputs = extractor(images=image, return_tensors="pt")
+    if st.button("Analyze X-Ray"):
+        with st.spinner("Analyzing image..."):
+            # Preprocess image and perform inference
+            inputs = processor(images=image, return_tensors="pt")
+            
             with torch.no_grad():
                 outputs = model(**inputs)
-                predicted_class_idx = outputs.logits.argmax(-1).item()
-                prediction = model.config.id2label[predicted_class_idx]
+                logits = outputs.logits
+                predicted_class_id = logits.argmax(-1).item()
+                confidence = torch.softmax(logits, dim=-1)[0][predicted_class_id].item()
 
-        # Structure clinical text output
-        english_summary = f"Chest X-Ray analysis indicates: {prediction}."
+            label = model.config.id2label[predicted_class_id]
 
-        # Stage 2: Translation to Nepali
-        nepali_summary = GoogleTranslator(source="en", target="ne").translate(
-            english_summary
-        )
-
-        # Stage 3: Text-to-Speech in Nepali
-        tts = gTTS(text=nepali_summary, lang="ne")
-        mp3_bytes = BytesIO()
-        tts.write_to_fp(mp3_bytes)
-        mp3_bytes.seek(0)
-
-    # Display Results
-    st.markdown("---")
-    st.subheader(" Findings & Summary")
-    st.write("**English Finding:**", english_summary)
-    st.write("**Nepali Summary (नेपाली):**", nepali_summary)
-
-    st.subheader(" Audio Summary (नेपाली आवाज)")
-    st.audio(mp3_bytes.read(), format="audio/mp3")
+            # Display results
+            st.success("Analysis Complete!")
+            st.metric(label="Predicted Finding", value=label.capitalize())
+            st.write(f"**Confidence Score:** {confidence * 100:.2f}%")
