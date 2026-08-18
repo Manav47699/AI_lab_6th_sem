@@ -1,0 +1,8 @@
+streamlit 
+torch 
+transformers
+pillow
+deep-transloator
+gTTS
+
+# to run the streamlit application -> streamlit run app.py
